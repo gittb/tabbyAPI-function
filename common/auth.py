@@ -8,28 +8,28 @@ import yaml
 from fastapi import Header, HTTPException
 from pydantic import BaseModel
 from loguru import logger
-from typing import Optional
+from typing import Optional, List
 
 
 class AuthKeys(BaseModel):
     """
     This class represents the authentication keys for the application.
     It contains two types of keys: 'api_key' and 'admin_key'.
-    The 'api_key' is used for general API calls, while the 'admin_key'
-    is used for administrative tasks. The class also provides a method
-    to verify if a given key matches the stored 'api_key' or 'admin_key'.
+    The 'api_keys' is a list of keys used for general API calls, while the 'admin_keys' is a list of 
+    keys used for administrative tasks. The class also provides a method
+    to verify if a given key matches the stored 'api_keys' or 'admin_keys'.
     """
 
-    api_key: str
-    admin_key: str
+    api_keys: List[str]
+    admin_keys: List[str]
 
     def verify_key(self, test_key: str, key_type: str):
         """Verify if a given key matches the stored key."""
-        if key_type == "admin_key":
-            return test_key == self.admin_key
-        if key_type == "api_key":
+        if key_type == "admin_keys":
+            return test_key in self.admin_keys
+        if key_type == "api_keys":
             # Admin keys are valid for all API calls
-            return test_key == self.api_key or test_key == self.admin_key
+            return test_key in self.api_keys or test_key in self.admin_keys
         return False
 
 
@@ -68,8 +68,8 @@ def load_auth_keys(disable_from_config: bool):
             yaml.safe_dump(AUTH_KEYS.model_dump(), auth_file, default_flow_style=False)
 
     logger.info(
-        f"Your API key is: {AUTH_KEYS.api_key}\n"
-        f"Your admin key is: {AUTH_KEYS.admin_key}\n\n"
+        f"Your API key is: {', '.join(AUTH_KEYS.api_keys)}\n"
+        f"Your admin key is: {', '.join(AUTH_KEYS.admin_keys)}\n\n"
         "If these keys get compromised, make sure to delete api_tokens.yml "
         "and restart the server. Have fun!"
     )
