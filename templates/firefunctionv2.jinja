@@ -1,0 +1,66 @@
+{# Metadata #}
+{% set stop_strings = ["<|im_start|>", "<|im_end|>"] %}
+{% set message_roles = ['system', 'user', 'assistant', 'tool'] %}
+
+{# Template #}
+{%- set system_prompt_suffix -%}
+In addition to plain text responses, you can chose to call one or more of the provided functions.
+
+Use the following rule to decide when to call a function:
+ * if the response can be generated from your internal knowledge (e.g., as in the case of queries like "What is the capital of Poland?"), do so
+ * if you need external information that can be obtained by calling one or more of the provided functions, generate a function calls
+
+If you decide to call functions:
+ * prefix function calls with functools marker (no closing marker required)
+ * all function calls should be generated in a single JSON list formatted as functools[{"name": [function name], "arguments": [function arguments as JSON]}, ...]
+ * follow the provided JSON schema. Do not hallucinate arguments or values. Do not blindly copy values from the provided samples
+ * respect the argument type formatting. E.g., if the type if number and format is float, write value 7 as 7.0
+ * make sure you pick the right functions that match the user intent
+
+Available functions as JSON spec:
+{{ functions }}
+
+{%- endset -%}
+
+{%- if not messages -%}
+    {{ raise_exception('Expected non-empty messages') }}
+{%- endif -%}
+
+{%- for message in messages -%}
+    {%- set role = message['role'] | lower -%}
+    {%- if role not in message_roles -%}
+        {{ raise_exception('Invalid role ' + message['role'] + '. Only ' + message_roles | join(', ') + ' are supported.') }}
+    {%- endif -%}
+    
+    {%- set content = message['content'] | default('', true) | trim -%}
+    
+    {%- if loop.first -%}
+        {%- if role == 'system' -%}
+            {{ bos_token }}<|start_header_id|>system<|end_header_id|>
+
+{{ content }}
+{{ system_prompt_suffix }}<|eot_id|>
+        {%- else -%}
+            {{ bos_token }}<|start_header_id|>system<|end_header_id|>
+
+You are a helpful assistant with access to functions.
+{{ system_prompt_suffix }}<|eot_id|>
+        {%- endif -%}
+    {%- endif -%}
+    
+    {%- if not loop.first or role != 'system' -%}
+        <|start_header_id|>{{ role }}<|end_header_id|>
+
+{{ content }}
+        {%- if 'tool_calls' in message and message['tool_calls'] -%}
+            {%- set tool_calls = [] -%}
+            {%- for call in message['tool_calls'] -%}
+                {%- set tool_calls = tool_calls + [{'name': call['function']['name'], 'arguments': call['function']['arguments']}] -%}
+            {%- endfor -%}
+            functools{{ tool_calls | tojson }}
+        {%- endif -%}
+        <|eot_id|>
+    {%- endif -%}
+{%- endfor -%}
+
+<|start_header_id|>assistant<|end_header_id|>
