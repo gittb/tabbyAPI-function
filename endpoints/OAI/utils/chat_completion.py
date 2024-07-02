@@ -169,6 +169,7 @@ def format_prompt_with_template(data: ChatCompletionRequest):
             {
                 "messages": data.messages,
                 "add_generation_prompt": data.add_generation_prompt,
+                "functions": data.functions, #BDG
                 **special_tokens_dict,
             }
         )

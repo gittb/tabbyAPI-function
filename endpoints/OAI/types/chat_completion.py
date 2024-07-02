@@ -47,6 +47,7 @@ class ChatCompletionRequest(CommonCompletionRequest):
     add_generation_prompt: Optional[bool] = True
     template_vars: Optional[dict] = {}
     response_prefix: Optional[str] = None
+    functions: Optional[str] = None #BDG
 
 
 class ChatCompletionResponse(BaseModel):
