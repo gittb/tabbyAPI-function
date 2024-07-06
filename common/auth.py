@@ -25,9 +25,9 @@ class AuthKeys(BaseModel):
 
     def verify_key(self, test_key: str, key_type: str):
         """Verify if a given key matches the stored key."""
-        if key_type == "admin_keys":
+        if key_type == "admin_key":
             return test_key in self.admin_keys
-        if key_type == "api_keys":
+        if key_type == "api_key":
             # Admin keys are valid for all API calls
             return test_key in self.api_keys or test_key in self.admin_keys
         return False
