@@ -8,13 +8,16 @@ import pathlib
 from loguru import logger
 from typing import Optional
 
-from backends.exllamav2.model import ExllamaV2Container
 from common import config
 from common.logger import get_loading_progress_bar
 from common.utils import unwrap
+from endpoints.utils import do_export_openapi
 
-# Global model container
-container: Optional[ExllamaV2Container] = None
+if not do_export_openapi:
+    from backends.exllamav2.model import ExllamaV2Container
+
+    # Global model container
+    container: Optional[ExllamaV2Container] = None
 
 
 def load_progress(module, modules):
