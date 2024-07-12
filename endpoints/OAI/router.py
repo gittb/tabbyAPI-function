@@ -1,16 +1,15 @@
 import asyncio
 import pathlib
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette import EventSourceResponse
 from sys import maxsize
-from typing import Optional
 
-from common import config, model, gen_logging, sampling
-from common.auth import check_admin_key, check_api_key, validate_key_permission
+from common import config, model, sampling
+from common.auth import check_admin_key, check_api_key, get_key_permission
 from common.downloader import hf_repo_download
 from common.networking import handle_request_error, run_with_request_disconnect
 from common.templating import PromptTemplate, get_all_templates
-from common.utils import coalesce, unwrap
+from common.utils import unwrap
 from endpoints.OAI.types.auth import AuthPermissionResponse
 from endpoints.OAI.types.completion import CompletionRequest, CompletionResponse
 from endpoints.OAI.types.chat_completion import (
@@ -19,7 +18,6 @@ from endpoints.OAI.types.chat_completion import (
 )
 from endpoints.OAI.types.download import DownloadRequest, DownloadResponse
 from endpoints.OAI.types.lora import (
-    LoraCard,
     LoraList,
     LoraLoadRequest,
     LoraLoadResponse,
@@ -28,7 +26,6 @@ from endpoints.OAI.types.model import (
     ModelCard,
     ModelList,
     ModelLoadRequest,
-    ModelCardParameters,
     ModelLoadResponse,
 )
 from endpoints.OAI.types.sampler_overrides import (
@@ -51,8 +48,13 @@ from endpoints.OAI.utils.completion import (
     generate_completion,
     stream_generate_completion,
 )
-from endpoints.OAI.utils.model import get_model_list, stream_model_load
-from endpoints.OAI.utils.lora import get_lora_list
+from endpoints.OAI.utils.model import (
+    get_current_model,
+    get_current_model_list,
+    get_model_list,
+    stream_model_load,
+)
+from endpoints.OAI.utils.lora import get_active_loras, get_lora_list
 
 
 router = APIRouter()
@@ -173,15 +175,24 @@ async def chat_completion_request(
 # Model list endpoint
 @router.get("/v1/models", dependencies=[Depends(check_api_key)])
 @router.get("/v1/model/list", dependencies=[Depends(check_api_key)])
-async def list_models() -> ModelList:
-    """Lists all models in the model directory."""
+async def list_models(request: Request) -> ModelList:
+    """
+    Lists all models in the model directory.
+
+    Requires an admin key to see all models.
+    """
+
     model_config = config.model_config()
     model_dir = unwrap(model_config.get("model_dir"), "models")
     model_path = pathlib.Path(model_dir)
 
     draft_model_dir = config.draft_model_config().get("draft_model_dir")
 
-    models = get_model_list(model_path.resolve(), draft_model_dir)
+    if get_key_permission(request) == "admin":
+        models = get_model_list(model_path.resolve(), draft_model_dir)
+    else:
+        models = await get_current_model_list()
+
     if unwrap(model_config.get("use_dummy_models"), False):
         models.data.insert(0, ModelCard(id="gpt-3.5-turbo"))
 
@@ -193,45 +204,29 @@ async def list_models() -> ModelList:
     "/v1/model",
     dependencies=[Depends(check_api_key), Depends(check_model_container)],
 )
-async def get_current_model() -> ModelCard:
+async def current_model() -> ModelCard:
     """Returns the currently loaded model."""
-    model_params = model.container.get_model_parameters()
-    draft_model_params = model_params.pop("draft", {})
 
-    if draft_model_params:
-        model_params["draft"] = ModelCard(
-            id=unwrap(draft_model_params.get("name"), "unknown"),
-            parameters=ModelCardParameters.model_validate(draft_model_params),
-        )
-    else:
-        draft_model_params = None
-
-    model_card = ModelCard(
-        id=unwrap(model_params.pop("name", None), "unknown"),
-        parameters=ModelCardParameters.model_validate(model_params),
-        logging=gen_logging.PREFERENCES,
-    )
-
-    if draft_model_params:
-        draft_card = ModelCard(
-            id=unwrap(draft_model_params.pop("name", None), "unknown"),
-            parameters=ModelCardParameters.model_validate(draft_model_params),
-        )
-
-        model_card.parameters.draft = draft_card
-
-    return model_card
+    return get_current_model()
 
 
 @router.get("/v1/model/draft/list", dependencies=[Depends(check_api_key)])
-async def list_draft_models() -> ModelList:
-    """Lists all draft models in the model directory."""
-    draft_model_dir = unwrap(
-        config.draft_model_config().get("draft_model_dir"), "models"
-    )
-    draft_model_path = pathlib.Path(draft_model_dir)
+async def list_draft_models(request: Request) -> ModelList:
+    """
+    Lists all draft models in the model directory.
 
-    models = get_model_list(draft_model_path.resolve())
+    Requires an admin key to see all draft models.
+    """
+
+    if get_key_permission(request) == "admin":
+        draft_model_dir = unwrap(
+            config.draft_model_config().get("draft_model_dir"), "models"
+        )
+        draft_model_path = pathlib.Path(draft_model_dir)
+
+        models = get_model_list(draft_model_path.resolve())
+    else:
+        models = await get_current_model_list(is_draft=True)
 
     return models
 
@@ -314,10 +309,18 @@ async def download_model(request: Request, data: DownloadRequest) -> DownloadRes
 # Lora list endpoint
 @router.get("/v1/loras", dependencies=[Depends(check_api_key)])
 @router.get("/v1/lora/list", dependencies=[Depends(check_api_key)])
-async def get_all_loras() -> LoraList:
-    """Lists all LoRAs in the lora directory."""
-    lora_path = pathlib.Path(unwrap(config.lora_config().get("lora_dir"), "loras"))
-    loras = get_lora_list(lora_path.resolve())
+async def list_all_loras(request: Request) -> LoraList:
+    """
+    Lists all LoRAs in the lora directory.
+
+    Requires an admin key to see all LoRAs.
+    """
+
+    if get_key_permission(request) == "admin":
+        lora_path = pathlib.Path(unwrap(config.lora_config().get("lora_dir"), "loras"))
+        loras = get_lora_list(lora_path.resolve())
+    else:
+        loras = get_active_loras()
 
     return loras
 
@@ -327,19 +330,10 @@ async def get_all_loras() -> LoraList:
     "/v1/lora",
     dependencies=[Depends(check_api_key), Depends(check_model_container)],
 )
-async def get_active_loras() -> LoraList:
+async def active_loras() -> LoraList:
     """Returns the currently loaded loras."""
-    active_loras = LoraList(
-        data=[
-            LoraCard(
-                id=pathlib.Path(lora.lora_path).parent.name,
-                scaling=lora.lora_scaling * lora.lora_r / lora.lora_alpha,
-            )
-            for lora in model.container.get_loras()
-        ]
-    )
 
-    return active_loras
+    return get_active_loras()
 
 
 # Load lora endpoint
@@ -425,6 +419,7 @@ async def encode_tokens(data: TokenEncodeRequest) -> TokenEncodeResponse:
 )
 async def decode_tokens(data: TokenDecodeRequest) -> TokenDecodeResponse:
     """Decodes tokens into a string."""
+
     message = model.container.decode_tokens(data.tokens, **data.get_params())
     response = TokenDecodeResponse(text=unwrap(message, ""))
 
@@ -432,24 +427,18 @@ async def decode_tokens(data: TokenDecodeRequest) -> TokenDecodeResponse:
 
 
 @router.get("/v1/auth/permission", dependencies=[Depends(check_api_key)])
-async def get_key_permission(
-    x_admin_key: Optional[str] = Header(None),
-    x_api_key: Optional[str] = Header(None),
-    authorization: Optional[str] = Header(None),
-) -> AuthPermissionResponse:
+async def key_permission(request: Request) -> AuthPermissionResponse:
     """
     Gets the access level/permission of a provided key in headers.
 
     Priority:
-    - X-api-key
-    - X-admin-key
     - Authorization
+    - X-admin-key
+    - X-api-key
     """
 
-    test_key = coalesce(x_admin_key, x_api_key, authorization)
-
     try:
-        permission = await validate_key_permission(test_key)
+        permission = get_key_permission(request)
         return AuthPermissionResponse(permission=permission)
     except ValueError as exc:
         error_message = handle_request_error(str(exc)).error.message
@@ -459,9 +448,21 @@ async def get_key_permission(
 
 @router.get("/v1/templates", dependencies=[Depends(check_api_key)])
 @router.get("/v1/template/list", dependencies=[Depends(check_api_key)])
-async def get_templates() -> TemplateList:
-    templates = get_all_templates()
-    template_strings = [template.stem for template in templates]
+async def list_templates(request: Request) -> TemplateList:
+    """
+    Get a list of all templates.
+
+    Requires an admin key to see all templates.
+    """
+
+    template_strings = []
+    if get_key_permission(request) == "admin":
+        templates = get_all_templates()
+        template_strings = [template.stem for template in templates]
+    else:
+        if model.container and model.container.prompt_template:
+            template_strings.append(model.container.prompt_template.name)
+
     return TemplateList(data=template_strings)
 
 
@@ -470,7 +471,8 @@ async def get_templates() -> TemplateList:
     dependencies=[Depends(check_admin_key), Depends(check_model_container)],
 )
 async def switch_template(data: TemplateSwitchRequest):
-    """Switch the currently loaded template"""
+    """Switch the currently loaded template."""
+
     if not data.name:
         error_message = handle_request_error(
             "New template name not found.",
@@ -503,11 +505,20 @@ async def unload_template():
 # Sampler override endpoints
 @router.get("/v1/sampling/overrides", dependencies=[Depends(check_api_key)])
 @router.get("/v1/sampling/override/list", dependencies=[Depends(check_api_key)])
-async def list_sampler_overrides() -> SamplerOverrideListResponse:
-    """API wrapper to list all currently applied sampler overrides"""
+async def list_sampler_overrides(request: Request) -> SamplerOverrideListResponse:
+    """
+    List all currently applied sampler overrides.
+
+    Requires an admin key to see all override presets.
+    """
+
+    if get_key_permission(request) == "admin":
+        presets = sampling.get_all_presets()
+    else:
+        presets = []
 
     return SamplerOverrideListResponse(
-        presets=sampling.get_all_presets(), **sampling.overrides_container.model_dump()
+        presets=presets, **sampling.overrides_container.model_dump()
     )
 
 
