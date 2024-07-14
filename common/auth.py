@@ -62,7 +62,7 @@ def load_auth_keys(disable_from_config: bool):
             AUTH_KEYS = AuthKeys.model_validate(auth_keys_dict)
     except FileNotFoundError:
         new_auth_keys = AuthKeys(
-            api_key=secrets.token_hex(16), admin_key=secrets.token_hex(16)
+            api_keys=[secrets.token_hex(16)], admin_keys=[secrets.token_hex(16)]
         )
         AUTH_KEYS = new_auth_keys
 
